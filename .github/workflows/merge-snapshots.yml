@@ -1,0 +1,37 @@
+name: Merge Operator Snapshots
+
+on:
+  push:
+    paths:
+      - "eu/*/latest.json"
+      - "na/*/latest.json"
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write   # needed to commit combined_latest.json back to the repo
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run merger
+        run: python merge_snapshots.py
+
+      - name: Commit and push combined snapshots
+        run: |
+          git config user.name  "segway-merger[bot]"
+          git config user.email "segway-merger[bot]@users.noreply.github.com"
+          git add eu/combined_latest.json na/combined_latest.json
+          # Only commit if there are actual changes
+          git diff --cached --quiet || git commit -m "auto-merge: update combined snapshots [skip ci]"
+          git push
