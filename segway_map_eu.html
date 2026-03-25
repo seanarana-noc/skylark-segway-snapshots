@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Skylark Segway Grid Monitor — EU</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #111; color: #eee; font-family: Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; }
+
+    #header {
+      padding: 10px 16px;
+      background: #1a1a2e;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      border-bottom: 1px solid #333;
+    }
+    #header h1 { font-size: 15px; color: #fff; white-space: nowrap; }
+
+    .legend { display: flex; gap: 12px; align-items: center; font-size: 12px; }
+    .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+    .green  { background: #00C800; }
+    .yellow { background: #FFC800; }
+    .red    { background: #DC0000; }
+
+    #controls {
+      padding: 8px 16px;
+      background: #16213e;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      border-bottom: 1px solid #333;
+    }
+
+    #time-controls { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 300px; }
+    #play-btn {
+      padding: 4px 14px;
+      background: #0f3460;
+      border: 1px solid #4a9eff;
+      color: #fff;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    #play-btn:hover { background: #1a5276; }
+    #time-slider { flex: 1; accent-color: #4a9eff; }
+    #time-label { font-size: 11px; color: #aaa; white-space: nowrap; min-width: 160px; }
+    #stats { font-size: 11px; color: #aaa; margin-left: auto; white-space: nowrap; }
+
+    #map { flex: 1; }
+    #loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.8);
+      padding: 20px 32px;
+      border-radius: 8px;
+      font-size: 14px;
+      color: #fff;
+      z-index: 999;
+    }
+  </style>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+
+<div id="header">
+  <h1>Skylark Segway Grid Monitor — EU</h1>
+  <div class="legend">
+    <span><span class="dot green"></span>Pass (VRS &lt; 15 km)</span>
+    <span><span class="dot yellow"></span>Warning (VRS &gt; 15 km)</span>
+    <span><span class="dot red"></span>Fail (no 1006)</span>
+  </div>
+</div>
+
+<div id="controls">
+  <div id="time-controls">
+    <button id="play-btn" onclick="togglePlay()">▶ Play</button>
+    <input type="range" id="time-slider" min="0" value="0" step="1" oninput="onSlider(this.value)" />
+    <span id="time-label">Loading...</span>
+  </div>
+  <div id="stats">—</div>
+</div>
+
+<div id="map"></div>
+<div id="loading">Loading EU data...</div>
+
+<script>
+const URL = "https://raw.githubusercontent.com/seanarana-noc/skylark-segway-snapshots/main/eu/sean/history.json";
+const COLOR = { green: "#00C800", yellow: "#FFC800", red: "#DC0000" };
+
+const map = L.map("map", { preferCanvas: true }).setView([52, 10], 4);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+  attribution: "© OpenStreetMap © CARTO", maxZoom: 18
+}).addTo(map);
+
+let timestamps = [];
+let frameData  = {};
+let currentIdx = 0;
+let playing    = false;
+let playTimer  = null;
+let circles    = [];
+
+async function loadAll() {
+  try {
+    const r = await fetch(URL);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+
+    const tsSet = new Set();
+    const raw   = {};
+    for (const f of data.features) {
+      const ts = f.properties.timestamp;
+      if (!ts) continue;
+      tsSet.add(ts);
+      if (!raw[ts]) raw[ts] = [];
+      raw[ts].push(f);
+    }
+
+    timestamps = Array.from(tsSet).sort();
+    frameData  = raw;
+    document.getElementById("time-slider").max = timestamps.length - 1;
+    document.getElementById("loading").style.display = "none";
+    if (timestamps.length > 0) renderFrame(timestamps.length - 1);
+    else document.getElementById("time-label").textContent = "No data yet";
+  } catch (e) {
+    document.getElementById("loading").textContent = "Error: " + e.message;
+  }
+}
+
+function renderFrame(idx) {
+  currentIdx = idx;
+  document.getElementById("time-slider").value = idx;
+  const ts = timestamps[idx];
+  document.getElementById("time-label").textContent = `${ts}  (${idx + 1} / ${timestamps.length})`;
+
+  for (const c of circles) map.removeLayer(c);
+  circles = [];
+
+  let green = 0, yellow = 0, red = 0;
+  for (const f of (frameData[ts] || [])) {
+    const [lon, lat] = f.geometry.coordinates;
+    const status = f.properties.status;
+    const color  = COLOR[status] || COLOR.green;
+    if (status === "green") green++;
+    else if (status === "yellow") yellow++;
+    else if (status === "red") red++;
+
+    const c = L.circleMarker([lat, lon], {
+      radius: 4, color: "transparent",
+      fillColor: color, fillOpacity: 0.85, weight: 0
+    }).bindTooltip(`${lat}, ${lon}<br>Status: ${status}<br>${ts}`, { sticky: true });
+    c.addTo(map);
+    circles.push(c);
+  }
+  document.getElementById("stats").textContent = `Green: ${green}  Yellow: ${yellow}  Red: ${red}`;
+}
+
+function onSlider(val) { stopPlay(); renderFrame(parseInt(val)); }
+
+function togglePlay() { playing ? stopPlay() : startPlay(); }
+
+function startPlay() {
+  playing = true;
+  document.getElementById("play-btn").textContent = "⏸ Pause";
+  playTimer = setInterval(() => {
+    const next = (currentIdx + 1) % timestamps.length;
+    renderFrame(next);
+    if (next === timestamps.length - 1) stopPlay();
+  }, 800);
+}
+
+function stopPlay() {
+  playing = false;
+  clearInterval(playTimer);
+  document.getElementById("play-btn").textContent = "▶ Play";
+}
+
+loadAll();
+</script>
+</body>
+</html>
